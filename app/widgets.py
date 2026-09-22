@@ -196,6 +196,7 @@ class VideoCard(QFrame):
         layout.setSpacing(12)
 
         cover = QLabel()
+        self._cover = cover
         pixmap = _load_pixmap(cover_path)
         if not pixmap.isNull():
             cover.setPixmap(pixmap.scaled(160, 90, Qt.KeepAspectRatio, Qt.SmoothTransformation))
@@ -229,3 +230,12 @@ class VideoCard(QFrame):
         button_layout.addWidget(copy_btn)
         button_layout.addWidget(open_btn)
         layout.addLayout(button_layout)
+
+    def set_thumbnail(self, pixmap: QPixmap) -> None:
+        """解析完成后回填视频封面（poster）。"""
+        if self._cover is None:
+            return
+        scaled = pixmap.scaled(160, 90, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self._cover.setText("")
+        self._cover.setPixmap(scaled)
+        self._cover.setFixedSize(scaled.size())

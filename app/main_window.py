@@ -145,18 +145,19 @@ class MainWindow(QMainWindow):
                 card.download_requested.connect(self._on_download)
                 card.copy_requested.connect(self._on_copy_link)
                 card.open_requested.connect(self._on_open)
+                self._load_thumbnail(card, item, item.get("poster_url"))
             else:
                 card = ImageCard(item)
                 card.download_requested.connect(self._on_download)
                 card.copy_requested.connect(self._on_copy_link)
                 card.view_requested.connect(self._on_open)
-                self._load_thumbnail(card, item)
+                self._load_thumbnail(card, item, item.get("url"))
             self._add_card(card)
         self.status_label.setText(f"共找到 {len(items)} 项。")
 
-    def _load_thumbnail(self, card, item: dict) -> None:
-        """后台下载缩略图，完成后刷新卡片预览。"""
-        url = item.get("url")
+    def _load_thumbnail(self, card, item: dict, url) -> None:
+        """后台下载封面/缩略图，完成后刷新卡片预览。"""
+        url = item.get("url") if url is None else url
         if not url:
             return
         thumb_dir = os.path.join(tempfile.gettempdir(), "doubao_remove_mark_thumbs")

@@ -21,6 +21,27 @@ DOUBAO_HEADERS = {
 FALLBACK_API_PARAMS = {"codec_type": "8", "logo_type": "unwatermarked"}
 FALLBACK_API_HOST_SUFFIXES = (".snssdk.com", ".douyinvod.com", ".dola.com", ".byteintlapi.com")
 
+_SSR_SCRIPT_SOURCE = re.compile(r'data-script-src="(?:modern-run-router-data-fn|modern-run-window-fn)"')
+
+
+def _iter_ssr_payloads(page_html: str):
+    """遍历分享页 SSR 脚本中的 data-fn-args JSON 载荷（纯逻辑）。"""
+    found_script = False
+    for script_match in re.finditer(r"<script\b[^>]*>", page_html, re.DOTALL):
+        script_tag = script_match.group(0)
+        if not _SSR_SCRIPT_SOURCE.search(script_tag):
+            continue
+        args_match = re.search(r'data-fn-args="(.*?)"', script_tag, re.DOTALL)
+        if not args_match:
+            continue
+        try:
+            yield json.loads(html.unescape(args_match.group(1)))
+            found_script = True
+        except json.JSONDecodeError:
+            continue
+    if not found_script:
+        raise KeyError("无法解析页面数据，请确认链接是否有效")
+
 
 def _build_unwatermarked_url(url: str) -> str:
     parsed = urllib.parse.urlsplit(url)
@@ -44,7 +65,6 @@ def _build_unwatermarked_url(url: str) -> str:
 
 def _extract_fallback_apis(page_html: str) -> list:
     apis: dict[str, None] = {}
-    parsed_script = False
 
     def add_api(candidate: str) -> None:
         candidate = html.unescape(candidate).replace(r"\u0026", "&").replace(r"\/", "/")
@@ -72,23 +92,41 @@ def _extract_fallback_apis(page_html: str) -> list:
             except json.JSONDecodeError:
                 pass
 
-    source_pattern = re.compile(r'data-script-src="(?:modern-run-router-data-fn|modern-run-window-fn)"')
-    for script_match in re.finditer(r"<script\b[^>]*>", page_html, re.DOTALL):
-        script_tag = script_match.group(0)
-        if not source_pattern.search(script_tag):
-            continue
-        args_match = re.search(r'data-fn-args="(.*?)"', script_tag, re.DOTALL)
-        if not args_match:
-            continue
-        try:
-            walk(json.loads(html.unescape(args_match.group(1))))
-            parsed_script = True
-        except json.JSONDecodeError:
-            continue
-
-    if not parsed_script:
-        raise KeyError("无法解析页面数据，请确认链接是否有效")
+    for payload in _iter_ssr_payloads(page_html):
+        walk(payload)
     return list(apis)
+
+
+def _extract_poster_urls(page_html: str) -> dict[str, str]:
+    """从分享页 SSR 数据提取 vid -> 未加水印封面 URL 的映射（纯逻辑）。
+
+    仅收集与同一对象中 vid/video_id 相邻的 poster_url，作为
+    fallback_api 响应缺少封面时的兜底来源。
+    """
+    poster_by_vid: dict[str, str] = {}
+
+    def walk(value: Any, depth: int = 0) -> None:
+        if depth > 30 or value is None:
+            return
+        if isinstance(value, dict):
+            vid = value.get("vid") or value.get("video_id")
+            poster = value.get("poster_url")
+            if isinstance(vid, str) and isinstance(poster, str) and poster.startswith("https://"):
+                poster_by_vid.setdefault(vid, poster)
+            for child in value.values():
+                walk(child, depth + 1)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child, depth + 1)
+        elif isinstance(value, str) and value.lstrip().startswith(("{", "[")):
+            try:
+                walk(json.loads(value), depth + 1)
+            except json.JSONDecodeError:
+                pass
+
+    for payload in _iter_ssr_payloads(page_html):
+        walk(payload)
+    return poster_by_vid
 
 
 def _parse_doubao_video_response(payload: dict, fallback_api: str) -> dict:
@@ -156,6 +194,7 @@ def doubao_video_parse(url: str, return_raw: bool = False) -> list[dict]:
         fallback_apis = _extract_fallback_apis(page_response.text)
         if not fallback_apis:
             raise KeyError("页面中未找到视频 fallback_api，请确认分享链接包含可用视频")
+        poster_by_vid = _extract_poster_urls(page_response.text)
 
         video_list = []
         errors = []
@@ -169,6 +208,8 @@ def doubao_video_parse(url: str, return_raw: bool = False) -> list[dict]:
                     return payload
 
                 result = _parse_doubao_video_response(payload, fallback_api)
+                if not result.get("poster_url"):
+                    result["poster_url"] = poster_by_vid.get(str(result.get("vid") or ""), "")
                 identity = str(result["vid"] or result["url"])
                 if identity not in seen_videos:
                     seen_videos.add(identity)

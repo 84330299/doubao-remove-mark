@@ -7,6 +7,7 @@ import pytest
 from parser.video import (
     _build_unwatermarked_url,
     _extract_fallback_apis,
+    _extract_poster_urls,
     _parse_doubao_video_response,
     doubao_video_parse,
 )
@@ -85,6 +86,55 @@ class TestExtractFallbackAPIs:
             _extract_fallback_apis("<html><body>none</body></html>")
 
 
+class TestExtractPosterUrls:
+    def test_maps_vid_to_poster_url(self):
+        args = json.dumps(
+            {
+                "data": {
+                    "message": {
+                        "vid": "VID1",
+                        "poster_url": "https://p26-sign.douyinpic.com/tos/p1~tplv-noop.image?a=1",
+                        "nested": [
+                            {"vid": "VID2", "poster_url": "https://p3-sign.douyinpic.com/tos/p2~tplv-noop.image?b=2"}
+                        ],
+                    }
+                }
+            }
+        )
+        page = "<html><body>" + _script(args) + "</body></html>"
+        assert _extract_poster_urls(page) == {
+            "VID1": "https://p26-sign.douyinpic.com/tos/p1~tplv-noop.image?a=1",
+            "VID2": "https://p3-sign.douyinpic.com/tos/p2~tplv-noop.image?b=2",
+        }
+
+    def test_first_poster_wins_on_duplicate_vid(self):
+        args = json.dumps(
+            {
+                "videos": [
+                    {"vid": "VID1", "poster_url": "https://a.douyinpic.com/tos/1"},
+                    {"vid": "VID1", "poster_url": "https://b.douyinpic.com/tos/2"},
+                ]
+            }
+        )
+        page = "<html><body>" + _script(args) + "</body></html>"
+        assert _extract_poster_urls(page) == {"VID1": "https://a.douyinpic.com/tos/1"}
+
+    def test_ignores_non_https_and_missing_poster(self):
+        args = json.dumps(
+            {
+                "vid": "VID1",
+                "poster_url": "http://insecure.example/tos/2",
+                "no_poster": {"vid": "VID3", "other": 1},
+            }
+        )
+        page = "<html><body>" + _script(args) + "</body></html>"
+        assert _extract_poster_urls(page) == {}
+
+    def test_raises_keyerror_when_no_script(self):
+        with pytest.raises(KeyError):
+            _extract_poster_urls("<html><body>none</body></html>")
+
+
 def _response_payload(main_url: str, resolution: tuple[int, int] = (1080, 1920), extra: dict | None = None):
     width, height = resolution
     entry = {
@@ -152,3 +202,52 @@ class TestDoubaoVideoParseValidation:
     def test_rejects_unsupported_domain(self):
         with pytest.raises(ValueError):
             doubao_video_parse("https://www.qianwen.com/thread/abc")
+
+
+class _FakeResp:
+    def __init__(self, text: str = "", payload: dict | None = None):
+        self.text = text
+        self._payload = payload
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self._payload
+
+
+class TestDoubaoVideoParsePosterFallback:
+    FALLBACK_API = "https://v3.douyinvod.com/video/fplay/abc?x=1"
+    VID = "VID123"
+    SSR_POSTER = "https://p26-sign.douyinpic.com/tos/p1~tplv-noop.image?a=1"
+
+    def _page_html(self) -> str:
+        payload = {
+            "data": {
+                "message": {
+                    "vid": self.VID,
+                    "poster_url": self.SSR_POSTER,
+                    "video": {"fallback_api": self.FALLBACK_API},
+                }
+            }
+        }
+        return _script(json.dumps(payload))
+
+    def _stub_fetch(self, monkeypatch, api_payload: dict):
+        calls = iter([_FakeResp(text=self._page_html()), _FakeResp(payload=api_payload)])
+        monkeypatch.setattr("parser.video._fetch", lambda *a, **k: next(calls))
+
+    def test_falls_back_to_ssr_poster_when_api_lacks_it(self, monkeypatch):
+        api_payload = _response_payload(_wrapped_url("https://v3.douyinvod.com/video/fplay/out.mp4"))
+        self._stub_fetch(monkeypatch, api_payload)
+
+        result = doubao_video_parse("https://www.doubao.com/thread/abc123")
+        assert result[0]["poster_url"] == self.SSR_POSTER
+
+    def test_api_poster_takes_precedence_over_ssr(self, monkeypatch):
+        api_payload = _response_payload(_wrapped_url("https://v3.douyinvod.com/video/fplay/out.mp4"))
+        api_payload["data"]["video_info"]["poster_url"] = "https://api.example/tos/api"
+        self._stub_fetch(monkeypatch, api_payload)
+
+        result = doubao_video_parse("https://www.doubao.com/thread/abc123")
+        assert result[0]["poster_url"] == "https://api.example/tos/api"

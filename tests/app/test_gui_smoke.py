@@ -31,3 +31,13 @@ def test_image_card_constructs(qapp):
 def test_video_card_constructs(qapp):
     card = VideoCard({"url": "https://x.com/v.mp4", "width": 1920, "height": 1080, "definition": "2k"})
     assert card.video["definition"] == "2k"
+
+
+def test_video_card_set_thumbnail(qapp):
+    from PySide6.QtGui import QPixmap
+
+    card = VideoCard({"url": "https://x.com/v.mp4", "poster_url": "https://x.com/poster.jpg"})
+    pixmap = QPixmap(160, 90)
+    pixmap.fill()
+    card.set_thumbnail(pixmap)
+    assert not card._cover.pixmap().isNull()
