@@ -97,3 +97,11 @@ uv run ruff format .
 本项目仅供学习交流使用，采用 [MIT](LICENSE) 许可证。
 
 **注意**：使用本服务时请遵守豆包平台的使用条款和相关法律法规。
+
+## 支持
+
+如果你觉得这个小应用有用，欢迎请我喝杯咖啡 ☕
+
+<div align="center">
+  <img src="demo/2201d589e2c2f4f6e679c31755a604e6.jpg" width="200" alt="请我喝杯咖啡">
+</div>
