@@ -67,6 +67,18 @@ def is_doubao_thread_url(url: str) -> bool:
     return valid_host and "/thread/" in url
 
 
+def _fetch(url: str, headers: dict) -> httpx.Response:
+    """请求页面；SSL 证书校验失败时（代理/杀软拦截）降级重试。"""
+    try:
+        with httpx.Client(timeout=httpx.Timeout(10, read=60)) as client:
+            return client.get(url, headers=headers)
+    except httpx.ConnectError as e:
+        if "CERTIFICATE_VERIFY_FAILED" not in str(e):
+            raise
+    with httpx.Client(timeout=httpx.Timeout(10, read=60), verify=False) as client:
+        return client.get(url, headers=headers)
+
+
 def doubao_image_parse(url: str, return_raw: bool = False):
     """解析豆包对话分享链接中的无水印图片列表。"""
     if not is_doubao_thread_url(url):
@@ -81,9 +93,8 @@ def doubao_image_parse(url: str, return_raw: bool = False):
     }
 
     try:
-        with httpx.Client() as client:
-            response = client.get(url, headers=headers)
-            html_str = response.text
+        response = _fetch(url, headers)
+        html_str = response.text
     except httpx.RequestError as e:
         raise ValueError(f"网络请求失败，请检查网络连接: {str(e)}") from e
 

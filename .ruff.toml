@@ -56,6 +56,7 @@ ignore = [
     "B903", # class-as-data-structure
     "B904", # raise-without-from-inside-except
     "B905", # zip-without-explicit-strict
+    "N802", # function-name-should-be-lowercase (Qt override methods use camelCase)
     "N806", # non-lowercase-variable-in-function
     "N815", # mixed-case-variable-in-class-scope
     "PT011", # pytest-raises-too-broad

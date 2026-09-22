@@ -48,6 +48,12 @@ pip install PySide6 httpx cryptography pytest pytest-asyncio ruff
 python main.py
 ```
 
+## 界面预览
+
+| 图片下载 | 视频下载 |
+| :---: | :---: |
+| <img src="demo/download_img.png" width="360" alt="图片下载"> | <img src="demo/download_video.png" width="360" alt="视频下载"> |
+
 ## 使用说明
 
 1. 在豆包 App / 网页端，长按对话中的图片或视频，点击「分享」并复制链接地址

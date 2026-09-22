@@ -8,7 +8,7 @@ from typing import Any
 
 import httpx
 
-from parser.image import is_doubao_thread_url
+from parser.image import _fetch, is_doubao_thread_url
 from parser.video_crypto import decode_main_url
 
 DOUBAO_HEADERS = {
@@ -151,36 +151,35 @@ def doubao_video_parse(url: str, return_raw: bool = False) -> list[dict]:
         raise ValueError("新无水印解析仅支持包含视频的豆包对话分享链接（/thread/）")
 
     try:
-        with httpx.Client(follow_redirects=True, timeout=20) as client:
-            page_response = client.get(url, headers=DOUBAO_HEADERS)
-            page_response.raise_for_status()
-            fallback_apis = _extract_fallback_apis(page_response.text)
-            if not fallback_apis:
-                raise KeyError("页面中未找到视频 fallback_api，请确认分享链接包含可用视频")
+        page_response = _fetch(url, DOUBAO_HEADERS)
+        page_response.raise_for_status()
+        fallback_apis = _extract_fallback_apis(page_response.text)
+        if not fallback_apis:
+            raise KeyError("页面中未找到视频 fallback_api，请确认分享链接包含可用视频")
 
-            video_list = []
-            errors = []
-            seen_videos: set[str] = set()
-            for fallback_api in fallback_apis:
-                try:
-                    response = client.get(_build_unwatermarked_url(fallback_api), headers=DOUBAO_HEADERS)
-                    response.raise_for_status()
-                    payload = response.json()
-                    if return_raw:
-                        return payload
+        video_list = []
+        errors = []
+        seen_videos: set[str] = set()
+        for fallback_api in fallback_apis:
+            try:
+                response = _fetch(_build_unwatermarked_url(fallback_api), DOUBAO_HEADERS)
+                response.raise_for_status()
+                payload = response.json()
+                if return_raw:
+                    return payload
 
-                    result = _parse_doubao_video_response(payload, fallback_api)
-                    identity = str(result["vid"] or result["url"])
-                    if identity not in seen_videos:
-                        seen_videos.add(identity)
-                        video_list.append(result)
-                except (httpx.HTTPError, json.JSONDecodeError, KeyError, ValueError) as exc:
-                    errors.append(str(exc))
+                result = _parse_doubao_video_response(payload, fallback_api)
+                identity = str(result["vid"] or result["url"])
+                if identity not in seen_videos:
+                    seen_videos.add(identity)
+                    video_list.append(result)
+            except (httpx.HTTPError, json.JSONDecodeError, KeyError, ValueError) as exc:
+                errors.append(str(exc))
 
-            if not video_list:
-                detail = errors[0] if errors else "未知错误"
-                raise KeyError(f"视频解析失败: {detail}")
-            return video_list
+        if not video_list:
+            detail = errors[0] if errors else "未知错误"
+            raise KeyError(f"视频解析失败: {detail}")
+        return video_list
     except httpx.RequestError as e:
         raise ValueError(f"网络请求失败，请检查网络连接: {str(e)}") from e
     except httpx.HTTPStatusError as e:

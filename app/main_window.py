@@ -3,9 +3,11 @@
 import os
 import subprocess
 import sys
+import tempfile
+from pathlib import Path
 
 from PySide6.QtCore import Qt, QThreadPool
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtGui import QGuiApplication, QPixmap
 from PySide6.QtWidgets import (
     QFileDialog,
     QLabel,
@@ -19,8 +21,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.service import extract_share_links
-from app.widgets import ImageCard, VideoCard
+from app.service import default_save_name, extract_share_links
+from app.widgets import FlowLayout, ImageCard, VideoCard
 from app.workers import DownloadWorker, ParseWorker
 
 
@@ -28,10 +30,14 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("无印豆包")
-        self.resize(760, 640)
+        self.setWindowFlag(Qt.WindowMaximizeButtonHint, False)
+        screen = QGuiApplication.primaryScreen().availableGeometry()
+        self.resize(int(screen.width() * 0.8), int(screen.height() * 0.8))
         self.thread_pool = QThreadPool.globalInstance()
         self._active_workers = []
-        self._download_dir = ""
+        self._thumb_workers = []
+        self._download_seq = 0
+        self._last_save_dir = ""
         self._last_url = ""
         self._last_tab = 0
 
@@ -46,6 +52,7 @@ class MainWindow(QMainWindow):
 
         self.url_input = QLineEdit()
         self.url_input.setPlaceholderText("粘贴豆包（doubao/dola）对话分享链接…")
+        self.url_input.setFixedHeight(44)
         self.url_input.returnPressed.connect(self._on_parse)
         root.addWidget(self.url_input)
 
@@ -58,6 +65,7 @@ class MainWindow(QMainWindow):
         controls.addWidget(self.tabs)
 
         self.parse_btn = QPushButton("解析")
+        self.parse_btn.setFixedHeight(44)
         self.parse_btn.clicked.connect(self._on_parse)
         controls.addWidget(self.parse_btn)
 
@@ -70,9 +78,7 @@ class MainWindow(QMainWindow):
         self.results_scroll = QScrollArea()
         self.results_scroll.setWidgetResizable(True)
         self._results_host = QWidget()
-        self._results_layout = QVBoxLayout(self._results_host)
-        self._results_layout.setAlignment(Qt.AlignTop)
-        self._results_layout.setSpacing(8)
+        self._results_layout = FlowLayout(self._results_host, spacing=8)
         self.results_scroll.setWidget(self._results_host)
         root.addWidget(self.results_scroll, stretch=1)
 
@@ -110,9 +116,12 @@ class MainWindow(QMainWindow):
         self.thread_pool.start(worker)
 
     def _track_done(self, worker) -> None:
-        if worker in self._active_workers:
-            self._active_workers.remove(worker)
-        self.parse_btn.setEnabled(True)
+        try:
+            if worker in self._active_workers:
+                self._active_workers.remove(worker)
+            worker.signals.deleteLater()
+        finally:
+            self.parse_btn.setEnabled(True)
 
     def _clear_results(self) -> None:
         while self._results_layout.count():
@@ -121,13 +130,16 @@ class MainWindow(QMainWindow):
             if widget is not None:
                 widget.deleteLater()
 
+    def _add_card(self, card: QWidget) -> None:
+        self._results_layout.addWidget(card)
+
     def _on_parse_success(self, items: list) -> None:
         self.status_label.setText("")
         if not items:
             self.status_label.setText("解析完成，但未找到资源。")
             return
         is_video = self.tabs.currentIndex() == 1
-        for index, item in enumerate(items, start=1):
+        for item in items:
             if is_video:
                 card = VideoCard(item)
                 card.download_requested.connect(self._on_download)
@@ -138,8 +150,27 @@ class MainWindow(QMainWindow):
                 card.download_requested.connect(self._on_download)
                 card.copy_requested.connect(self._on_copy_link)
                 card.view_requested.connect(self._on_open)
-            self._results_layout.addWidget(card)
+                self._load_thumbnail(card, item)
+            self._add_card(card)
         self.status_label.setText(f"共找到 {len(items)} 项。")
+
+    def _load_thumbnail(self, card, item: dict) -> None:
+        """后台下载缩略图，完成后刷新卡片预览。"""
+        url = item.get("url")
+        if not url:
+            return
+        thumb_dir = os.path.join(tempfile.gettempdir(), "doubao_remove_mark_thumbs")
+        os.makedirs(thumb_dir, exist_ok=True)
+        index = len(self._thumb_workers) + 1
+        worker = DownloadWorker(str(url), thumb_dir, "image", index)
+        worker.signals.succeeded.connect(lambda path, c=card: self._on_thumb_ready(c, path))
+        self._thumb_workers.append(worker)
+        self.thread_pool.start(worker)
+
+    def _on_thumb_ready(self, card, path: str) -> None:
+        pixmap = QPixmap(str(path))
+        if not pixmap.isNull() and card.isVisible():
+            card.set_thumbnail(pixmap)
 
     def _on_parse_failed(self, message: str) -> None:
         self._clear_results()
@@ -166,17 +197,24 @@ class MainWindow(QMainWindow):
         url = item.get("url")
         if not url:
             return
-        if not self._download_dir:
-            chosen = QFileDialog.getExistingDirectory(self, "选择保存目录", "")
-            if not chosen:
-                return
-            self._download_dir = chosen
 
         is_video = "poster_url" in item or "definition" in item
         media_type = "video" if is_video else "image"
-        index = self._results_layout.count()
-        worker = DownloadWorker(str(url), self._download_dir, media_type, index)
-        worker.signals.succeeded.connect(self._on_downloaded)
+        default_name = default_save_name(media_type)
+        default_path = str(Path(self._last_save_dir) / default_name) if self._last_save_dir else default_name
+        chosen, _ = QFileDialog.getSaveFileName(
+            self,
+            "另存为",
+            default_path,
+            "媒体文件 (*.jpg *.jpeg *.png *.webp *.gif *.mp4 *.mov *.webm)",
+        )
+        if not chosen:
+            return
+
+        target = Path(chosen)
+        self._last_save_dir = str(target.parent)
+        worker = DownloadWorker(str(url), str(target.parent), media_type, self._download_seq, target_path=str(target))
+        worker.signals.succeeded.connect(lambda _p: self._on_downloaded(str(target)))
         worker.signals.failed.connect(self._on_download_failed)
         self._active_workers.append(worker)
         self.thread_pool.start(worker)
